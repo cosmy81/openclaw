@@ -1,7 +1,6 @@
 # ricordarsi di aggiungere l'utente al gruppo docker e non lanciarlo come root
 # sudo usermod -aG docker $USER
 # newgrp docker
-
 services:
   openclaw-gateway:
     image: ${OPENCLAW_IMAGE}
@@ -10,25 +9,27 @@ services:
     env_file:
       - .env
     environment:
-      - HOME=/home/node
-      - NODE_ENV=production
-      - TERM=xterm-256color
-      - OPENCLAW_GATEWAY_BIND=${OPENCLAW_GATEWAY_BIND}
-      - OPENCLAW_GATEWAY_PORT=${OPENCLAW_GATEWAY_PORT}
-      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
-      - GOOGLE_PLACES_API_KEY=${GOOGLE_PLACES_API_KEY}
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - GROQ_API_KEY=${GROQ_API_KEY}
-      - GOG_KEYRING_PASSWORD=${GOG_KEYRING_PASSWORD}
-      - GOG_ACCOUNT=${GOG_ACCOUNT}
-      - NOTION_API_KEY=${NOTION_API_KEY}
-      - LINKEDIN_API_KEY=${LINKEDIN_API_KEY}
-      - XDG_CONFIG_HOME=${XDG_CONFIG_HOME}
-      - PATH=/home/linuxbrew/.linuxbrew/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-#      - OPENCLAW_CONFIG_GATEWAY_CONTROLUI_DANGEROUSLYALLOWHOSTHEADERORIGINFALLBACK=true
-      - OPENCLAW_DOCKER_APT_PACKAGES=ffmpeg
+      HOME: /home/node
+      NODE_ENV: production
+      TERM: xterm-256color
+      OPENCLAW_GATEWAY_BIND: ${OPENCLAW_GATEWAY_BIND}
+      OPENCLAW_GATEWAY_PORT: ${OPENCLAW_GATEWAY_PORT}
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: ${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GOOGLE_PLACES_API_KEY: ${GOOGLE_PLACES_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GOG_KEYRING_PASSWORD: ${GOG_KEYRING_PASSWORD:-}
+      GOG_ACCOUNT: ${GOG_ACCOUNT:-}
+      NOTION_API_KEY: ${NOTION_API_KEY:-}
+      LINKEDIN_API_KEY: ${LINKEDIN_API_KEY:-}
+      XDG_CONFIG_HOME: ${XDG_CONFIG_HOME}
+      PATH: /home/linuxbrew/.linuxbrew/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      CLAUDE_AI_SESSION_KEY: ${CLAUDE_AI_SESSION_KEY:-}
+      CLAUDE_WEB_SESSION_KEY: ${CLAUDE_WEB_SESSION_KEY:-}
+      CLAUDE_WEB_COOKIE: ${CLAUDE_WEB_COOKIE:-}
     volumes:
       - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
       - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
@@ -37,8 +38,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      # Recommended: keep the Gateway loopback-only on the VPS; access via SSH tunnel.
-      # To expose it publicly, remove the `127.0.0.1:` prefix and firewall accordingly.
       - "127.0.0.1:${OPENCLAW_GATEWAY_PORT}:18789"
     command:
       [
@@ -52,17 +51,44 @@ services:
         "--allow-unconfigured",
       ]
 
-  #questo serve per whatsapp. tiene wacli sync --follow in esecuzione in background in un container separato, con restart automatico se crasha.
-  #aggiungo anche il volume ~/.wacli al servizio principale openclaw-gateway così l'agente può accedere alla cronologia sincronizzata
-#  wacli-sync:
-#    image: ${OPENCLAW_IMAGE}
-#    restart: unless-stopped
-#    env_file:
-#      - .env
-#    environment:
-#      - HOME=/home/node
-#      - NODE_ENV=production
-#    volumes:
-#      - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
-#      - ${WACLI_CONFIG_DIR}:/home/node/.wacli
-#    command: ["wacli", "sync", "--follow"]
+  openclaw-cli:
+    image: ${OPENCLAW_IMAGE:-openclaw:local}
+    network_mode: "service:openclaw-gateway"
+    cap_drop:
+      - NET_RAW
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN:-}
+      OPENCLAW_ALLOW_INSECURE_PRIVATE_WS: ${OPENCLAW_ALLOW_INSECURE_PRIVATE_WS:-}
+      BROWSER: echo
+      CLAUDE_AI_SESSION_KEY: ${CLAUDE_AI_SESSION_KEY:-}
+      CLAUDE_WEB_SESSION_KEY: ${CLAUDE_WEB_SESSION_KEY:-}
+      CLAUDE_WEB_COOKIE: ${CLAUDE_WEB_COOKIE:-}
+    volumes:
+      - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR}:/home/node/.openclaw/workspace
+    stdin_open: true
+    tty: true
+    init: true
+    entrypoint: ["node", "dist/index.js"]
+    depends_on:
+      - openclaw-gateway
+
+  # wacli-sync: tiene wacli sync --follow in background con restart automatico
+  # Decommentare quando wacli è autenticato
+  # wacli-sync:
+  #   image: ${OPENCLAW_IMAGE}
+  #   restart: unless-stopped
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     HOME: /home/node
+  #     NODE_ENV: production
+  #   volumes:
+  #     - ${OPENCLAW_CONFIG_DIR}:/home/node/.openclaw
+  #     - ${WACLI_CONFIG_DIR}:/home/node/.wacli
+  #   command: ["wacli", "sync", "--follow"]
