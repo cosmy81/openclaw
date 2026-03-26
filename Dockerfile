@@ -2,10 +2,16 @@
 
 ARG OPENCLAW_EXTENSIONS=""
 ARG OPENCLAW_VARIANT=default
-ARG OPENCLAW_NODE_BOOKWORM_IMAGE="node:22-bookworm@sha256:b501c082306a4f528bc4038cbf2fbb58095d583d0419a259b2114b5ac53d12e9"
-ARG OPENCLAW_NODE_BOOKWORM_DIGEST="sha256:b501c082306a4f528bc4038cbf2fbb58095d583d0419a259b2114b5ac53d12e9"
-ARG OPENCLAW_NODE_BOOKWORM_SLIM_IMAGE="node:22-bookworm-slim@sha256:9c2c405e3ff9b9afb2873232d24bb06367d649aa3e6259cbe314da59578e81e9"
-ARG OPENCLAW_NODE_BOOKWORM_SLIM_DIGEST="sha256:9c2c405e3ff9b9afb2873232d24bb06367d649aa3e6259cbe314da59578e81e9"
+ARG OPENCLAW_DOCKER_APT_UPGRADE=1
+ARG OPENCLAW_NODE_BOOKWORM_IMAGE="node:24-bookworm@sha256:3a09aa6354567619221ef6c45a5051b671f953f0a1924d1f819ffb236e520e6b"
+ARG OPENCLAW_NODE_BOOKWORM_DIGEST="sha256:3a09aa6354567619221ef6c45a5051b671f953f0a1924d1f819ffb236e520e6b"
+ARG OPENCLAW_NODE_BOOKWORM_SLIM_IMAGE="node:24-bookworm-slim@sha256:e8e2e91b1378f83c5b2dd15f0247f34110e2fe895f6ca7719dbb780f929368eb"
+ARG OPENCLAW_NODE_BOOKWORM_SLIM_DIGEST="sha256:e8e2e91b1378f83c5b2dd15f0247f34110e2fe895f6ca7719dbb780f929368eb"
+
+# Base images are pinned to SHA256 digests for reproducible builds.
+# Trade-off: digests must be updated manually when upstream tags move.
+# To update, run: docker buildx imagetools inspect node:24-bookworm (or podman)
+# and replace the digest below with the current multi-arch manifest list entry.
 
 FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS ext-deps
 ARG OPENCLAW_EXTENSIONS
@@ -58,6 +64,20 @@ RUN apt-get update && \
     apt-get purge -y make gcc && \
     apt-get autoremove -y
 
+# Install Bun (required for build scripts). Retry the whole bootstrap flow to
+# tolerate transient 5xx failures from bun.sh/GitHub during CI image builds.
+RUN set -eux; \
+    for attempt in 1 2 3 4 5; do \
+      if curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL https://bun.sh/install | bash; then \
+        break; \
+      fi; \
+      if [ "$attempt" -eq 5 ]; then \
+        exit 1; \
+      fi; \
+      sleep $((attempt * 2)); \
+    done
+ENV PATH="/root/.bun/bin:${PATH}"
+
 RUN npm install -g @steipete/summarize
 
 RUN curl -fsSL https://astral.sh/uv/install.sh | sh \
@@ -104,16 +124,17 @@ RUN CI=true pnpm prune --prod && \
 
 FROM ${OPENCLAW_NODE_BOOKWORM_IMAGE} AS base-default
 ARG OPENCLAW_NODE_BOOKWORM_DIGEST
-LABEL org.opencontainers.image.base.name="docker.io/library/node:22-bookworm" \
+LABEL org.opencontainers.image.base.name="docker.io/library/node:24-bookworm" \
   org.opencontainers.image.base.digest="${OPENCLAW_NODE_BOOKWORM_DIGEST}"
 
 FROM ${OPENCLAW_NODE_BOOKWORM_SLIM_IMAGE} AS base-slim
 ARG OPENCLAW_NODE_BOOKWORM_SLIM_DIGEST
-LABEL org.opencontainers.image.base.name="docker.io/library/node:22-bookworm-slim" \
+LABEL org.opencontainers.image.base.name="docker.io/library/node:24-bookworm-slim" \
   org.opencontainers.image.base.digest="${OPENCLAW_NODE_BOOKWORM_SLIM_DIGEST}"
 
 FROM base-${OPENCLAW_VARIANT}
 ARG OPENCLAW_VARIANT
+ARG OPENCLAW_DOCKER_APT_UPGRADE
 
 LABEL org.opencontainers.image.source="https://github.com/openclaw/openclaw" \
   org.opencontainers.image.url="https://openclaw.ai" \
@@ -124,11 +145,21 @@ LABEL org.opencontainers.image.source="https://github.com/openclaw/openclaw" \
 
 WORKDIR /app
 
+=======
+# Install system utilities present in bookworm but missing in bookworm-slim.
+# On the full bookworm image these are already installed (apt-get is a no-op).
+# Smoke workflows can opt out of distro upgrades to cut repeated CI time while
+# keeping the default runtime image behavior unchanged.
+
+
 RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
     apt-get update && \
+    if [ "${OPENCLAW_DOCKER_APT_UPGRADE}" != "0" ]; then \
+      DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends; \
+    fi && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      procps hostname curl git openssl libsqlite3-dev
+    procps hostname curl git lsof openssl libsqlite3-dev
 
 RUN chown node:node /app
 
@@ -147,10 +178,25 @@ COPY --from=runtime-assets --chown=node:node /app/extensions ./extensions
 COPY --from=runtime-assets --chown=node:node /app/skills ./skills
 COPY --from=runtime-assets --chown=node:node /app/docs ./docs
 
+# In npm-installed Docker images, prefer the copied source extension tree for
+# bundled discovery so package metadata that points at source entries stays valid.
+ENV OPENCLAW_BUNDLED_PLUGINS_DIR=/app/extensions
+
+# Keep pnpm available in the runtime image for container-local workflows.
+# Use a shared Corepack home so the non-root `node` user does not need a
+# first-run network fetch when invoking pnpm.
 ENV COREPACK_HOME=/usr/local/share/corepack
 RUN install -d -m 0755 "$COREPACK_HOME" && \
     corepack enable && \
-    corepack prepare "$(node -p "require('./package.json').packageManager")" --activate && \
+    for attempt in 1 2 3 4 5; do \
+      if corepack prepare "$(node -p "require('./package.json').packageManager")" --activate; then \
+        break; \
+      fi; \
+      if [ "$attempt" -eq 5 ]; then \
+        exit 1; \
+      fi; \
+      sleep $((attempt * 2)); \
+    done && \
     chmod -R a+rX "$COREPACK_HOME"
 
 ARG OPENCLAW_DOCKER_APT_PACKAGES=""
@@ -207,6 +253,10 @@ RUN printf '#!/bin/sh\nexec node /app/openclaw.mjs "$@"\n' > /usr/local/bin/open
     && chmod 755 /usr/local/bin/openclaw
 
 ENV NODE_ENV=production
+
+# Security hardening: Run as non-root user
+# The node:24-bookworm image includes a 'node' user (uid 1000)
+# This reduces the attack surface by preventing container escape via root privileges
 
 USER node
 
