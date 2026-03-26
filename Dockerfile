@@ -65,6 +65,8 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | sh \
     && chmod 755 /usr/local/bin/uv
 
 # ── OpenClaw build ──────────────────────────────────────────────
+RUN corepack enable
+
 WORKDIR /app
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
