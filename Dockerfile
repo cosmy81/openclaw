@@ -248,8 +248,8 @@ RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
  && chmod 755 /app/openclaw.mjs
 
 # crea wrapper script openclaw
-RUN printf '#!/bin/sh\nexec node /app/openclaw.mjs "$@"\n' > /usr/local/bin/openclaw \
-    && chmod 755 /usr/local/bin/openclaw
+#RUN printf '#!/bin/sh\nexec node /app/openclaw.mjs "$@"\n' > /usr/local/bin/openclaw \
+#    && chmod 755 /usr/local/bin/openclaw
 
 ENV NODE_ENV=production
 
